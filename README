@@ -1,0 +1,458 @@
+## BKPFS : Backup File System
+
+**Note**: _Can be viewed in a markdown editor if the reader wants better readability_. One such online
+editor is [this](https://dillinger.io/).
+
+This is an implementation of a backup file system build using wrapfs, which is a null layer file system.
+BKPFS allows user to automatically create backups of regular files defined by **write frequency** interval.
+
+### Important Features
+
+- Create backups of a file for every n writes; defined by **writefrequency**.
+- Make backups invisble to the user.(even with ls -a its not visible)
+- List all versions of a backup file.
+- Delete a oldest, newest or all versions of the file.
+- View Oldest, Newest or Nth version of a file from a given offset.
+- Restore newest or Nth version of a file.
+
+### Files of interest
+
+- fs/bkpfs/file.c - The backup functionality is triggered on bkpfs_write on a user defined write frequency.
+- fs/bkpfs/backup_operations.c - The meat of the backup creating logic can be found here.
+- fs/bkpfs/circular_buffer.h - Header file for the circular buffer.
+- fs/bkpfs/circular_buffer.c - Implementation of circular buffer.
+- CSE506/bkpctl.c - User program to manage backup versions for a given file.
+- CSE506/\*.sh - Test scripts for BKPFS. Have discussed the test cases in detail later in the documentation. CSE506/utils.sh might interest you, it contains a bunch of common script required
+  by all the other test cases.
+
+### Build BKPFS
+
+```
+cd hw2-vhegde
+make clean
+make
+```
+
+### Mount BKPFS
+
+```
+mount -t bkpfs
+-o maxver=$maxversions
+-o writefrequency=$writefrequency
+$lower_level_path $mount_path
+```
+
+### Unmount BKPFS
+
+```
+umount $mount_path
+```
+
+### User Program Usage
+
+```
+cd CSE-506
+make clean
+make
+```
+
+bkpctl is the executable.
+
+**List all Versions**
+`./bkpctl -l $filepath`
+**Delete a Specific Version**
+`./bkpctl -d $version_to_delete $filepath`
+**View a Specific Version for a given offset**
+`./bkpctl -v $version_to_view -p $offset $filepath`
+**Restore a Specific Version**
+`./bkpctl -r $version_to_restore $filepath`
+
+### All Flags
+
+```
+    -l : List all Versions
+    -d : Delete a Version
+        - newest
+        - oldest
+        - all
+    -v : View contens of a version
+        - newest
+        - oldest
+        - N
+    -p : offset from where to start reading
+    -r : Restore a version
+        - newest
+        - N
+    -h : Help
+```
+
+## Test Cases
+
+- All the test cases are self sufficient. The only pre-requisiste is that bkpfs module is loaded using insmod,before executing the test cases.
+- Some of the operations like mount unmount writing /mnt/bkpfs require root or relevant privileges.
+- Have catalogued all the test cases at the end of the document for easier reference.
+
+## BKPFS Design
+
+### Circular Buffer - Gentle Introduction
+
+- I have used a circular buffer to implement all BKPFS operations/policies.
+- Here the buffer doesn't actually have to exisit but one can assume the elements of the buffer to be
+  from 1 to N for a circular buffer of length N.
+- The head always points to the earliest or the oldest inserted element in the buffer and the tail points
+  to the newest or the most recently inserted element.
+- As one can see all the below operations (list, add, delete) can be performed by a simple manipulation
+  of head and tail.
+- The above properties makes it very convinient to efficiently implement the backup policies.
+
+**Supported Operations(fs/bkpfs/circular_buffer.h)**
+
+```
+/* Get list length */
+int list_length(int head, int tail, int limit);
+/* get nth element in the cirucular buffer from beginning */
+int get_version_n(int head, int tail, int limit, int n);
+/* Get all elements of a circular buffer */
+void list_files(int head, int tail, int limit, int *buff);
+/* Add a new element to tail of the buffer */
+void add_to_list(int *head, int *tail, int limit);
+/* Delete from start, end or all elements */
+void delete_from_list(int mode, int *head, int *tail, int limit);
+```
+
+### Examples
+
+- head 1, tail 5
+  - Order - 1 2 3 4 5
+  - Length - 5
+- head 2, tail 1
+  - Order - 2 3 4 5 1
+  - Length - 5
+- head 4, tail 2
+  - Order - 4 5 1 2
+  - Length - 4
+- head 0, tail 0
+  - No Elements
+
+_The actual implementation of the above operations can be viewed in fs/bkpfs/circular_buffer.c._
+
+**Backup policies When/How/Where/What**
+
+- Backups are created for a writefrequency set by the user in the mount options.
+  A small pseudo code to demonstrate the idea. As one can notice we only have to store
+  the write_count % writefrequency. If the value turns out to be 0 then we know its time to write.
+  The value is stored and subsequently retrieved from the vfs get/set extrattributes API.
+
+```
+/* fs/bkpfs/backup_operations.c */
+int should_create_backup(struct dentry *dentry)
+{
+   /* Code Omitted for the sake of brevity */
+    write_frequency = config_options.writefrequency;
+    write_count = get_write_count(dentry);
+    /* Create the backup */
+    if (write_count % write_frequency == 0)
+        should_backup = 1;
+    /* Increment the write count */
+    write_count = (write_count + 1) % write_frequency;
+    store_write_count(dentry, write_count);
+    return should_backup;
+}
+/* Place of invoking the backup functionality  */
+static ssize_t bkpfs_write(....params)
+{
+    /* Code Omitted for the sake of brevity */
+    err = vfs_write(lower_file, buf, count, ppos);
+    /* On Success */
+    if (err >= 0) {
+        /* Magic happens here */
+        if (should_create_backup(lower_file->f_path.dentry)) {
+               err = create_backup(lower_file);
+           }
+    /* Code Omitted for the sake of brevity */
+}
+```
+
+- **Naming Convention** - I have decided my backup file naming convention to be {master_file_name}.bckp.{1..N}.
+  Here N is the number of backups as configured at mount time. Remember the **number does not denote the backup
+  version except for the first cycle of write.**It is important to come up with a naming convention which
+  can derived from the master file and the version number, so I found this the most convienient for my use.
+
+```
+snprintf(filename, bufsz + 1, "%s.bckp.%d", orig, version);
+```
+
+- **Create a backup file** - When we decide to create a backup of a file I get hold of the parent directory
+  of the master file using parent of `lower_file->f_path.dentry` object and check if the backup file for
+  the version we are creating exists in the parent directory using `vfs_path_lookup`, if so we proceed on
+  to create a new file object for the backup file contents to be created. If we the `vfs_path_lookup`
+  returns a `-ENONENT` we need to create a negative dentry using `d_alloc` and
+  create inode corresponding the newly created dentry object. I am creating dentry object only for the lower
+  level file system, since BKPFS doesn't need to be aware of the backup files.
+
+```
+    /* get file version */
+    get_file_version(dentry, &head, &tail);
+    /* update head and tail */
+    add_to_list(&head, &tail, max_versions);
+    /* backup filename */
+    filename = backup_filename(orig, tail);
+    return_value = vfs_path_lookup(dentry,mount,filename, ....);
+    /* exit if error is not an enonet */
+    if (return_value && return_value != -ENOENT)
+        goto out;
+    /* +ve dentries */
+    if (!return_value)
+        goto backup_data;
+    /* creation of lower negative dentry if enonent  */
+    dentry = get_dentry(lower_parent_dentry, filename);
+    /* Finally create the backup file */
+    return_value = vfs_create(parent_dentry, lower_dentry, ....);
+    /* good to backup now */
+    goto backup_data;
+```
+
+- **Create a new file Object and Copying Data from Master File** - We use `dentry_open` to create a new file
+  object. Then using `vfs_copy_file_range` we copy the contents of the master file to the backup file.
+  Its important to truncate the backup files using `vfs_truncate` since I am reusing the same the backup files.
+  Since the master file was opened for `vfs_write` operation it is important to temporariliy change the mode
+  to READ_MODE and revert back to the original mode once the copying is done.
+
+```
+void add_to_buffer(int *head, int *tail, int limit)
+{
+    /* When the buffer is empty */
+    if (*head == 0) {
+        *head = *head + 1;
+        *tail = *tail + 1;
+        return;
+    }
+    /* add one more element */
+    *tail = *tail + 1;
+    if (*tail > limit)
+        *tail = 1;
+    /* list is full; adjust head */
+    if (*tail == *head) {
+        *head = *head + 1;
+        if (*head > limit)
+            *head = 1;
+    }
+}
+
+```
+
+- **Storing File Versions** - An important decision is to decide on a persistent location to store the file version.
+  Extra file attributes is one such good place to store the versions. I am actually not storing the file versions per
+  say but the location of head and tail of the circular buffer as explained in the earlier section.
+  The file version can be easily be inferred from the positions head and tail. So creating a backup is analogous
+  to adding an element to the circular buffer. We add an element to the tail of the buffer and adjust the
+  corresponding positions of head and tail.
+
+```
+    backup_file = dentry_open(&file_path, ...);
+    /* persist the meta data */
+    return_value = persist_file_version(dentry, head, tail);
+     /* Truncate not to leave any old data behind  */
+    (int)vfs_truncate(&backup_file_path, 0);
+    vfs_copy_file_range(file,..,backup_file, ...);
+```
+
+**Visibility policy**
+
+- The backup files created should not be visible to anyone.
+
+- In order to achieve this functionality we need to intercept the ->iterate operation.Iterate invokes the
+  actor callback which in turn populates the data send to the user space.The actor is of the type filldir.
+
+```
+struct dir_context {
+    const filldir_t actor;
+    loff_t pos;
+};
+```
+
+- Since it is a const we can't assign our custom filldir. But we can overwrite it. Before overwriting we store
+  the pointer to the original filldir. Now the iterate operation is invoked on the lower level file system with
+  the overriden context which filters out all backup(.bkps.) files. Once the iteration is completed we then restore
+  the pointer to the original filldir.
+
+```
+/* custom filldir to filter out all backup files */
+static int bkpfs_filldir(..., char *name)
+{
+    /* check if ends with matches .bckp. */
+    if (strstr(name, ".bckp.") != NULL)
+        return 0;
+    /* call the original filldir if not the case */
+    return original_filldir(...);
+}
+
+static int bkpfs_readdir(..., struct dir_context *ctx)
+{
+    /* our custom filldir */
+    filldir_t to_overide = bkpfs_filldir;
+    /* Save the original filldir */
+    original_filldir = ctx->actor;
+    /* overwrite the original with our version of filldir */
+    memcpy((void *)(&(ctx->actor)), (void *)&to_overide, sizeof(to_overide));
+    .....
+    err = iterate_dir(lower_file, ctx);
+    .....
+    /* Restore the original filldir  */
+    to_overide = original_filldir;
+    memcpy((void *)(&(ctx->actor)), (void *)&to_overide, sizeof(to_overide));
+    ...
+}
+
+```
+
+**Retention policy**
+
+- The property of the circular buffer is to overwrte the oldest elements of the buffer when the buffer is full.
+- In our case when a (N+1)st backup is created we overwrite the oldest backup and make it the new tail.
+  The head of the buffer is now the second element. As we can observe the contents of the oldest version(1 here)
+  was overwritten and was made the new tail.
+
+  **Example**
+  Before writing (N+1)st version - **1** 2 3 4 5
+  After writing (N+1)st version - 2 3 4 5 **1**
+
+- The best thing about this design in my personal opinion is that there is no need to delete or rename any files.
+  So its very efficient. The only extra operation is a `vfs_path_lookup` to see if the file exists and simple
+  pointer manipulation of head and tail positions.
+
+**Decisions taken for efficiency**
+
+- Creation of only one dentry for the backup files on the lower level file system.
+- Reusing the same master file object by temporarily changing it to READ_MODE for copying the data to the backups.
+- Using `vfs_copy_range` which uses `splice_range` to copy data hence more efficient.
+
+**Version management**
+
+Have leveraged IOCTLS for implementing all the version management operations.
+
+```
+typedef struct {
+    /* Version of the backup file */
+	u_int version;
+    /* Computation output from kernel space is placed here */
+	char *buff;
+    /* Indicating the buffer size */
+	u_int buff_size;
+    /* Read offset - appplicable only to viewing content  */
+	u_int read_pos;
+} bkpfs_ioctl_arguments;
+```
+
+The generic data structure I have designed to send arguments to the kernel space and receive back
+results from the kernel space. The Kernel uses `copy_from_user` API to copy the arguments to its
+structure and conveys the computation result by placing it in the buff using `copy_to_user`.
+
+- **List**
+
+```
+function list_versions(head, tail, N):
+    versions = []
+    for version in [head, N):
+        versions.push(version)
+    if version is not tail:
+        for version in [1,tail]:
+            versions.push(version)
+    return versions
+```
+
+1. Allocate a buffer of certain size in the user space, and pass it to the kerenl space using an IOCTL.
+2. The kernel program allocates the buffer of same size.
+3. Get head and tail stored as the extra attribute in the file using `vfs_getxattr` API.
+4. Use head and tail to obtain the versions by following the above pseudo code.
+5. For each version construct the backup file name and populate in the buffer.
+6. Copy the buffer back to the user space which shows then shows the listing to the user.
+
+- **Delete** - Manipulation of head and tail depending on the mode of delete.
+
+```
+function delete(mode,*head,*tail,N):
+    /* delete from tail if the flag is newest */
+    if (mode is newest)
+        if (*head == *tail):
+            *head = *tail = 0
+            return
+        *tail = 1 - (*tail % N)
+    /* delete at the head if the flag is oldest */
+    else if (mode is oldest):
+        if (*head == *tail):
+            *head = *tail = 0
+            return
+        *head = 1 + (*head % N)
+    /* delete all files */
+    else if (mode is delete)
+        *head = *tail = 0
+```
+
+Approximate Pseudo Code (For detailed implementation refer fs/bkpfs/circular_buffer.c)
+
+1. Get head and tail stored as the extra attribute in the file using `vfs_getxattr` API.
+2. Along with mode of deletion(newest, oldest,all) pass the address of the head and tail to the above function,
+   which adjusts the head and tail values.
+3. Persist the new values of the head and tail in the extra attributes of the file using `vfs_setxattr` API.
+4. As one might notice no file is actually deleted in the whole process. It is just a pointer magic.
+
+- **Restore**
+
+1. Get nth version from the circular buffer.
+2. Construct the name of the backup file.
+3. Do a `vfs_lookup` to populate the backup file path.
+4. Create a file object using `dentry_open` using the backup file path obtained in 3.
+5. Truncate the contents of the master file and copy the contents of the backup file to the master file.
+
+```
+function get_version_n(head, tail, N, n) {
+    for iterator in [head, N) and version < n:
+        version += 1
+    if(version < v):
+        for iterator in [1,tail] and version < n:
+            version += 1
+    return version
+```
+
+- **View Content**
+
+1. User program has to allocate **4096** bytes of memory for the kernel ioctl to copy the data. Apart from this it has to specify an **offset** from which the data is to be read from. Sending the contents of entire file can hurt the memory and not a very efficient method. In fact its impossible for a user to view the entire contents at one go. The kernel reads the memory in chunks of **PAGE_SIZE** so for the sake of effienciency.
+2. Get nth version from the circular buffer.
+3. Do a `vfs_lookup` to populate the backup file path.
+4. Create a file object using `dentry_open` using the backup file path obtained in 3.
+5. Set the file->f_pos to the offset sent by the user program.
+6. Copy the data populated by `kernel_read` to the user buffer using `copy_to_user`.
+
+### Test Cases Catalogue
+
+utils.sh - This has common scripts shared by all other test cases such as mounting, unmounting,
+creating backups, cleanup of backups ones the test cases are over.
+
+1. Mount - test_mount.sh
+2. Unmount - test_umount.sh
+3. List Versions - test_list_versions.sh
+4. List Versions of file with 0 backups - test_no_backups.sh
+5. Backup Retention Policy - test_backups_after_max.sh
+6. Write Frequency - test_write_frequency.sh
+7. Delete Newest - test_delete_versions_newest.sh
+8. Delete Oldest - test_delete_versions_oldest.sh
+9. Delete All - test_delete_versions_all.sh
+10. Delete a Non Existent Backup - test_delete_non_existent.sh
+11. Backup Visibility Policy - test_hidden_backups.sh
+12. View Contents of a Version N - test_read_content.sh
+13. View Contents Oldest - test_read_content_oldest.sh - NA
+14. View Content Newest - test_read_content_newest.sh - NA
+15. View Contents With offsets - test_read_content_with_offset.sh
+16. View Contents of a Non Existent Backup - test_view_non_existent.sh
+17. Restore from a Version N - test_restore_n.sh
+18. Restore latest Version - test_restore_newest.sh
+19. Restore a non existent backup - test_restore_non_existent.sh
+    User Program tests
+    ***
+20. No operation specified - test_no_actions.sh
+21. Multiple operations specified - test_multiple_actions.sh
+22. No input path provided - test_no_input_path.sh
+23. Invalid Delete Params - test_invalid_delete_params.sh
+24. Invalid Restore Params - test_invalid_restore_params.sh
+25. Invalid View Params - test_invalid_view_params.sh
