@@ -5,7 +5,7 @@
 
 This project was undertaken as a part of my Operating System Coursework. I am not allowed to publish the source code or even the design decisions in a public forum. Hence I have committed only the test cases which should hopefully provide you a gist of the project.
 
-If you want to have a peek at my design decisions or the source code please contact me at vhegde@cs.stonybrook.edu. I will reply after a discussion with my Professor [Erez Zadok](https://www3.cs.stonybrook.edu/~ezk/).      
+If you want to have a peek at my design decisions or the source code please contact me at vhegde@cs.stonybrook.edu. I will reply after discussing it with my Professor [Erez Zadok](https://www3.cs.stonybrook.edu/~ezk/).      
 
 **Description**
 
