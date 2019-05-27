@@ -1,4 +1,4 @@
-## BKPFS : Backup File System
+## Backup File System
 
 
 **Note** 
@@ -8,7 +8,7 @@ If you want to have a peek at the source code please contact me at vhegde@cs.sto
 
 **Description**
 
-This is an implementation of a backup file system build using wrapfs, which is a null layer file system. BKPFS allows user to automatically create backups of regular files defined by **write frequency** interval.
+This is an implementation of a backup file system build using wrapfs, which is a null layer file system. It allows user to automatically create backups of regular files defined by **write frequency** interval.
 
 ### Important Features
 
@@ -20,7 +20,7 @@ This is an implementation of a backup file system build using wrapfs, which is a
 - Restore newest or Nth version of a file.
 
 
-### Build BKPFS
+### Build
 
 ```
 cd repo
@@ -28,16 +28,16 @@ make clean
 make
 ```
 
-### Mount BKPFS
+### Mount Filesystem
 
 ```
-mount -t bkpfs
+mount -t filesytem
 -o maxver=$maxversions
 -o writefrequency=$writefrequency
 $lower_level_path $mount_path
 ```
 
-### Unmount BKPFS
+### Unmount Filesystem
 
 ```
 umount $mount_path
