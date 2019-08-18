@@ -54,14 +54,14 @@ make
 
 bkpctl is the executable.
 
-**List all Versions**
-`./bkpctl -l $filepath`
-**Delete a Specific Version**
-`./bkpctl -d $version_to_delete $filepath`
-**View a Specific Version for a given offset**
-`./bkpctl -v $version_to_view -p $offset $filepath`
-**Restore a Specific Version**
-`./bkpctl -r $version_to_restore $filepath`
+**List all Versions**  
+`./bkpctl -l $filepath`  
+**Delete a Specific Version**  
+`./bkpctl -d $version_to_delete $filepath`  
+**View a Specific Version for a given offset**  
+`./bkpctl -v $version_to_view -p $offset $filepath`  
+**Restore a Specific Version**  
+`./bkpctl -r $version_to_restore $filepath`  
 
 ### All Flags
 
